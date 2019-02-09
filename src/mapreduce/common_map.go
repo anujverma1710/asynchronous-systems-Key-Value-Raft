@@ -1,7 +1,11 @@
 package mapreduce
 
 import (
+	"encoding/json"
+	"fmt"
 	"hash/fnv"
+	"io/ioutil"
+	"os"
 )
 
 func doMap(
@@ -53,6 +57,30 @@ func doMap(
 	//
 	// Your code here (Part I).
 	//
+
+	fmt.Printf("%s %d\n", "Map Task", mapTask)
+
+	bytesContent, readError := ioutil.ReadFile(inFile)
+	if readError != nil {
+		fmt.Println("Problem in reading the file " + inFile + readError.Error())
+	}
+	inFileContent := string(bytesContent)
+	var slicedMappedKeyValues = mapF(inFile, inFileContent)
+	var intermediateFiles []*json.Encoder
+	for r := 0; r < nReduce; r++ {
+		nReduceIntermediateFileName := reduceName(jobName, mapTask, r)
+		file, createError := os.Create(nReduceIntermediateFileName)
+		if createError != nil {
+			fmt.Println(nReduceIntermediateFileName + "Error : " + createError.Error())
+		}
+		enc := json.NewEncoder(file)
+		defer file.Close()
+		intermediateFiles = append(intermediateFiles, enc)
+	}
+	for _, keyValue := range slicedMappedKeyValues {
+		hash := ihash(keyValue.Key) % nReduce
+		intermediateFiles[hash].Encode(&keyValue)
+	}
 }
 
 func ihash(s string) int {

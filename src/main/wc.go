@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"mapreduce"
 	"os"
+	"strconv"
+	"strings"
+	"unicode"
 )
 
 //
@@ -13,8 +16,22 @@ import (
 // and look only at the contents argument. The return value is a slice
 // of key/value pairs.
 //
+
 func mapF(filename string, contents string) []mapreduce.KeyValue {
 	// Your code here (Part II).
+
+	keyValueSlice := make([]mapreduce.KeyValue, 1500)
+
+	for _, splitWords := range strings.FieldsFunc(contents, func(a rune) bool {
+		return !unicode.IsLetter(a) && !unicode.IsNumber(a)
+	}) {
+		if len(splitWords) == 0 || splitWords == "\n" {
+			continue
+		}
+		keyValueSlice = append(keyValueSlice, mapreduce.KeyValue{splitWords, "1"})
+	}
+	return keyValueSlice
+
 }
 
 //
@@ -24,6 +41,12 @@ func mapF(filename string, contents string) []mapreduce.KeyValue {
 //
 func reduceF(key string, values []string) string {
 	// Your code here (Part II).
+
+	if len(key) == 0 {
+		return ""
+	}
+	numberOfOccurenceOfKeys := strconv.Itoa(len(values))
+	return numberOfOccurenceOfKeys
 }
 
 // Can be run in 3 ways:
