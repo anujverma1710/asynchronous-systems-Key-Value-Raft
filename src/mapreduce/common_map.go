@@ -60,25 +60,25 @@ func doMap(
 
 	fmt.Printf("%s %d\n", "Map Task", mapTask)
 
-	bytesContent, readError := ioutil.ReadFile(inFile)
+	bytesContent, readError := ioutil.ReadFile(inFile) // Reading the input file
 	if readError != nil {
 		fmt.Println("Problem in reading the file " + inFile + readError.Error())
 	}
 	inFileContent := string(bytesContent)
-	var slicedMappedKeyValues = mapF(inFile, inFileContent)
+	var slicedMappedKeyValues = mapF(inFile, inFileContent) // slicing for reduce
 	var intermediateFiles []*json.Encoder
 	for r := 0; r < nReduce; r++ {
 		nReduceIntermediateFileName := reduceName(jobName, mapTask, r)
-		file, createError := os.Create(nReduceIntermediateFileName)
+		file, createError := os.Create(nReduceIntermediateFileName) // creating Intermediate file with name : nReduceIntermediateFileName
 		if createError != nil {
 			fmt.Println(nReduceIntermediateFileName + "Error : " + createError.Error())
 		}
-		enc := json.NewEncoder(file)
+		enc := json.NewEncoder(file) // adding encoder to the intermediate file
 		defer file.Close()
 		intermediateFiles = append(intermediateFiles, enc)
 	}
 	for _, keyValue := range slicedMappedKeyValues {
-		hash := ihash(keyValue.Key) % nReduce
+		hash := ihash(keyValue.Key) % nReduce // selecting the intermediate file
 		intermediateFiles[hash].Encode(&keyValue)
 	}
 }

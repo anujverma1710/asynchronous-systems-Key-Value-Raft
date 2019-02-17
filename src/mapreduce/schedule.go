@@ -36,10 +36,10 @@ func schedule(jobName string, mapFiles []string, nReduce int, phase jobPhase, re
 	// Your code here (Part III, Part IV).
 	//
 
-	var waitGroup sync.WaitGroup
+	var waitGroup sync.WaitGroup // adding waitGroup for a worker
 
 	for task := 0; task < ntasks; task++ {
-		doTask := DoTaskArgs{jobName, mapFiles[task], phase, task, n_other}
+		doTask := DoTaskArgs{jobName, mapFiles[task], phase, task, n_other} // getting the RPC arguments
 		waitGroup.Add(1)
 		go func() {
 			defer waitGroup.Done()
@@ -47,9 +47,10 @@ func schedule(jobName string, mapFiles []string, nReduce int, phase jobPhase, re
 
 			for !serverResponseSuccess {
 				workerAddress := <-registerChan
-				serverResponseSuccess := call(workerAddress, "Worker.DoTask", doTask, nil)
+				serverResponseSuccess := call(workerAddress, "Worker.DoTask", doTask, nil) //sending RPC to a worker
 
-				if serverResponseSuccess {
+				if serverResponseSuccess { //waiting for the worker to finish task as call() method returns
+					//false in case of any failure or time out
 					go func() { registerChan <- workerAddress }()
 					break
 				}

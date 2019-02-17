@@ -22,13 +22,13 @@ func mapF(filename string, contents string) []mapreduce.KeyValue {
 
 	keyValueSlice := make([]mapreduce.KeyValue, 1500)
 
-	for _, splitWords := range strings.FieldsFunc(contents, func(a rune) bool {
+	for _, splitWords := range strings.FieldsFunc(contents, func(a rune) bool { // splitting words using FieldsFunc in go
 		return !unicode.IsLetter(a) && !unicode.IsNumber(a)
 	}) {
 		if len(splitWords) == 0 || splitWords == "\n" {
 			continue
 		}
-		keyValueSlice = append(keyValueSlice, mapreduce.KeyValue{splitWords, "1"})
+		keyValueSlice = append(keyValueSlice, mapreduce.KeyValue{splitWords, "1"}) // adding the word and "1" to the mapreduce slice
 	}
 	return keyValueSlice
 
@@ -45,7 +45,8 @@ func reduceF(key string, values []string) string {
 	if len(key) == 0 {
 		return ""
 	}
-	numberOfOccurenceOfKeys := strconv.Itoa(len(values))
+	numberOfOccurenceOfKeys := strconv.Itoa(len(values)) // since array contains strings of 1, the length of array gives
+	//the total word occurence
 	return numberOfOccurenceOfKeys
 }
 

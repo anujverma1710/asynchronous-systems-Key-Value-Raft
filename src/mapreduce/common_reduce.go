@@ -54,16 +54,16 @@ func doReduce(
 
 	fmt.Printf("%s %d\n", "Reduce Task", reduceTask)
 
-	mappedKeyValues := make(map[string][]string)
+	mappedKeyValues := make(map[string][]string) //creating map of strings having value as slice of strings
 
 	for mapTask := 0; mapTask < nMap; mapTask++ {
 		nReduceIntermediateFileName := reduceName(jobName, mapTask, reduceTask)
-		intermediateFile, fileOpenError := os.Open(nReduceIntermediateFileName)
+		intermediateFile, fileOpenError := os.Open(nReduceIntermediateFileName) //opening intermediate file
 		defer intermediateFile.Close()
 		if fileOpenError != nil {
 			fmt.Print(fileOpenError)
 		}
-		decoder := json.NewDecoder(intermediateFile)
+		decoder := json.NewDecoder(intermediateFile) //adding decoder to the intermediate file
 
 		var kV KeyValue
 		for {
@@ -77,20 +77,20 @@ func doReduce(
 
 	keys := make([]string, 0, len(mappedKeyValues))
 	for key := range mappedKeyValues {
-		keys = append(keys, key)
+		keys = append(keys, key) //creating slice of keys
 	}
 
 	sort.Strings(keys)
 
-	output, createFileError := os.Create(outFile)
+	output, createFileError := os.Create(outFile) //creating output file
 	if createFileError != nil {
 		fmt.Println(createFileError)
 	}
 	defer output.Close()
-	enc := json.NewEncoder(output)
+	enc := json.NewEncoder(output) // adding encoder to the output file
 
 	for _, key := range keys {
-		enc.Encode(KeyValue{key, reduceF(key, mappedKeyValues[key])})
+		enc.Encode(KeyValue{key, reduceF(key, mappedKeyValues[key])}) //adding keyValues
 	}
 
 }
