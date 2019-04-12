@@ -97,16 +97,14 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		reply.WrongLeader = true
 	} else {
 		reply.WrongLeader = false
-		//For entering an Op in the Raft log
-		kv.rf.Start(Op{args.Key, args.Value, args.ClientId, args.Op, args.OpRequestIndex})
-
 		kv.mu.Lock()
 		_, ok := kv.resultTransferChannel[args.ClientId]
 		if !ok {
 			kv.resultTransferChannel[args.ClientId] = make(chan Result)
 		}
 		kv.mu.Unlock()
-
+		//For entering an Op in the Raft log
+		kv.rf.Start(Op{args.Key, args.Value, args.ClientId, args.Op, args.OpRequestIndex})
 		select {
 		case <-time.After(1 * time.Second):
 			reply.Err = "TimeOut"
@@ -178,12 +176,13 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 					}
 					kv.lastCommitedOpRequestID[command.ClientId] = command.RequestID
 				}
-				if msg.CommandIndex > kv.latestCommitedLogIndex {
-					kv.latestCommitedLogIndex = msg.CommandIndex
-				}
+
 				value, ok := kv.dataStore[command.Key]
 				if ok {
 					result.Value = value
+				}
+				if msg.CommandIndex > kv.latestCommitedLogIndex {
+					kv.latestCommitedLogIndex = msg.CommandIndex
 				}
 
 				select {
@@ -191,16 +190,24 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 				default:
 				}
 
+				if kv.maxraftstate != -1 && kv.rf.GetRaftStateSize() >= kv.maxraftstate {
+					w := new(bytes.Buffer)
+					e := labgob.NewEncoder(w)
+					e.Encode(kv.dataStore)
+					e.Encode(kv.lastCommitedOpRequestID)
+					data := w.Bytes()
+					go kv.rf.UpdateSnapshot(data, kv.latestCommitedLogIndex)
+				}
+
 			} else {
 				data := msg.Snapshot
 				r := bytes.NewBuffer(data)
 				d := labgob.NewDecoder(r)
-				d.Decode(&kv.lastCommitedOpRequestID)
 				d.Decode(&kv.dataStore)
+				d.Decode(&kv.lastCommitedOpRequestID)
 				kv.latestCommitedLogIndex = msg.CommandIndex
 			}
 		}
 	}()
-
 	return kv
 }
