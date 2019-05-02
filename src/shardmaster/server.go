@@ -46,14 +46,13 @@ func (sm *ShardMaster) Join(args *JoinArgs, reply *JoinReply) {
 		Op:       "Join",
 		Servers:  args.Servers}
 
-	sm.checkOperationRequest(&operation, func(success bool) {
-		if !success {
-			reply.WrongLeader = true
-		} else {
-			reply.WrongLeader = false
-			reply.Err = OK
-		}
-	})
+	success := sm.checkOperationRequest(&operation)
+	if !success {
+		reply.WrongLeader = true
+	} else {
+		reply.WrongLeader = false
+		reply.Err = OK
+	}
 }
 
 func (sm *ShardMaster) Leave(args *LeaveArgs, reply *LeaveReply) {
@@ -64,14 +63,13 @@ func (sm *ShardMaster) Leave(args *LeaveArgs, reply *LeaveReply) {
 		Op:       "Leave",
 		GIDs:     args.GIDs}
 
-	sm.checkOperationRequest(&operation, func(success bool) {
-		if !success {
-			reply.WrongLeader = true
-		} else {
-			reply.WrongLeader = false
-			reply.Err = OK
-		}
-	})
+	success := sm.checkOperationRequest(&operation)
+	if !success {
+		reply.WrongLeader = true
+	} else {
+		reply.WrongLeader = false
+		reply.Err = OK
+	}
 }
 
 func (sm *ShardMaster) Move(args *MoveArgs, reply *MoveReply) {
@@ -81,14 +79,13 @@ func (sm *ShardMaster) Move(args *MoveArgs, reply *MoveReply) {
 		OpIdx:    args.OperIndex,
 		Op:       "Move",
 		Shard:    args.Shard, GID: args.GID}
-	sm.checkOperationRequest(&operation, func(success bool) {
-		if !success {
-			reply.WrongLeader = true
-		} else {
-			reply.WrongLeader = false
-			reply.Err = OK
-		}
-	})
+	success := sm.checkOperationRequest(&operation)
+	if !success {
+		reply.WrongLeader = true
+	} else {
+		reply.WrongLeader = false
+		reply.Err = OK
+	}
 }
 
 func (sm *ShardMaster) Query(args *QueryArgs, reply *QueryReply) {
@@ -99,18 +96,16 @@ func (sm *ShardMaster) Query(args *QueryArgs, reply *QueryReply) {
 		Op:       "Query",
 		Num:      args.Num}
 
-	sm.checkOperationRequest(&operation, func(success bool) {
-		if !success {
-			reply.WrongLeader = true
-		} else {
-			reply.WrongLeader = false
-			reply.Err = OK
-			// on success, past or current Config is copied
-			sm.mu.Lock()
-			sm.ConfigCopying(args.Num, &reply.Config)
-			sm.mu.Unlock()
-		}
-	})
+	success := sm.checkOperationRequest(&operation)
+	if !success {
+		reply.WrongLeader = true
+	} else {
+		reply.WrongLeader = false
+		reply.Err = OK
+		sm.mu.Lock()
+		sm.ConfigCopying(args.Num, &reply.Config)
+		sm.mu.Unlock()
+	}
 }
 
 //
@@ -129,12 +124,11 @@ func (sm *ShardMaster) Raft() *raft.Raft {
 	return sm.rf
 }
 
-func (sm *ShardMaster) checkOperationRequest(cmd *Op, replySuccessStatus func(success bool)) {
+func (sm *ShardMaster) checkOperationRequest(cmd *Op) bool {
 
 	_, isLeader := sm.rf.GetState()
 	if !isLeader {
-		replySuccessStatus(false)
-		return
+		return false
 	}
 
 	sm.mu.Lock()
@@ -142,31 +136,24 @@ func (sm *ShardMaster) checkOperationRequest(cmd *Op, replySuccessStatus func(su
 	if ok {
 		if cmd.OpIdx <= dup.Seq {
 			sm.mu.Unlock()
-			replySuccessStatus(true)
-			return
+			return true
 		}
 	}
 
-	// notify raft to agreement
 	index, term, _ := sm.rf.Start(cmd)
 
 	ch := make(chan struct{})
 	sm.notifyChannels[index] = ch
 	sm.mu.Unlock()
 
-	replySuccessStatus(true)
-
-	// wait for Raft to complete agreement
 	select {
 	case <-ch:
 		curTerm, isLeader := sm.rf.GetState()
-
-		// what if still leader, but different term? just let client retry
 		if !isLeader || term != curTerm {
-			replySuccessStatus(false)
-			return
+			return false
 		}
 	}
+	return true
 }
 
 //
@@ -262,16 +249,16 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister)
 	return sm
 }
 
-func (sm *ShardMaster) ConfigCopying(index int, config *Config) {
-	if index == -1 || index >= len(sm.configs) {
-		index = len(sm.configs) - 1
+func (sm *ShardMaster) ConfigCopying(idx int, config *Config) {
+	if idx == -1 || idx >= len(sm.configs) {
+		idx = len(sm.configs) - 1
 	}
 
 	config.Groups = make(map[int][]string)
 
-	config.Num = sm.configs[index].Num
-	config.Shards = sm.configs[index].Shards
-	for key, val := range sm.configs[index].Groups {
+	config.Num = sm.configs[idx].Num
+	config.Shards = sm.configs[idx].Shards
+	for key, val := range sm.configs[idx].Groups {
 		var servers = make([]string, len(val))
 		copy(servers, val)
 		config.Groups[key] = servers
@@ -286,69 +273,74 @@ func (sm *ShardMaster) BalancingOfShard(config *Config) {
 		return
 	}
 
-	average := len(config.Shards) / replicaGroups // shards per replica group
+	shardsPerReplicaGroup := len(config.Shards) / replicaGroups
 
-	if average == 0 {
+	if shardsPerReplicaGroup == 0 {
 		return
 	}
 
-	//  mapping of group to shard
-	var reverseMapping = make(map[int][]int)
+	var reverseMappingOfGroupToShard = make(map[int][]int)
 	for key, value := range config.Shards {
-		reverseMapping[value] = append(reverseMapping[value], key)
+		reverseMappingOfGroupToShard[value] = append(reverseMappingOfGroupToShard[value], key)
 	}
 
-	var extraGroups []GroupStatus
-	var lacking []GroupStatus
+	count1, count2, lacking, extraGroups := UpdateConfigForNewGroup(reverseMappingOfGroupToShard, shardsPerReplicaGroup, config)
 
-	count1, count2 := 0, 0
-	// for new group
-	for group := range config.Groups {
-		_, ok := reverseMapping[group]
-		if !ok {
-			lacking = append(lacking, GroupStatus{group, average})
-			count1 += average
+	count2, count1, lacking, extraGroups = UpdateWhenGroupRemoved(config, shardsPerReplicaGroup, reverseMappingOfGroupToShard, lacking, extraGroups, replicaGroups, count2, count1)
+
+	lacking, reverseMappingOfGroupToShard = Compensate(count2, count1, lacking, reverseMappingOfGroupToShard, config, shardsPerReplicaGroup)
+
+	reverseMappingOfGroupToShard = RebalanceReverse(lacking, extraGroups, reverseMappingOfGroupToShard)
+
+	for k, v := range reverseMappingOfGroupToShard {
+		for _, s := range v {
+			config.Shards[s] = k
 		}
 	}
+}
 
-	leftShards := len(config.Shards) - replicaGroups*average // extra shards after average
+func BalanceGroup(data map[int][]int, source, destination, count int) {
+	srcData, dstData := data[source], data[destination]
 
-	// if some group is removed
-	for key, val := range reverseMapping {
-		_, ok := config.Groups[key]
-		if ok {
-			if len(val) < average {
-				lacking = append(lacking, GroupStatus{key, average - len(val)})
-				count1 += average - len(val)
-			}
-			if len(val) > average {
+	e := srcData[:count]
+	dstData = append(dstData, e...)
+	srcData = srcData[count:]
 
-				if leftShards == 0 {
-					extraGroups = append(extraGroups, GroupStatus{key, len(val) - average})
-					count2 += len(val) - average
-				} else if len(val) > average+1 {
-					extraGroups = append(extraGroups, GroupStatus{key, len(val) - average - 1})
-					count2 += len(val) - average - 1
-					leftShards--
-				} else if len(val) == average+1 {
-					leftShards--
-				}
-			}
+	data[source] = srcData
+	data[destination] = dstData
+}
 
+func RebalanceReverse(lacking []GroupStatus, extraGroups []GroupStatus, reverseMapping map[int][]int) map[int][]int {
+	for len(lacking) != 0 && len(extraGroups) != 0 {
+		exG := extraGroups[0]
+		lack := lacking[0]
+		src := exG.group
+		dst := lack.group
+		if exG.count < lack.count {
+			BalanceGroup(reverseMapping, src, dst, exG.count)
+			extraGroups = extraGroups[1:]
+			lacking[0].count = lacking[0].count - exG.count
+		} else if exG.count > lack.count {
+			BalanceGroup(reverseMapping, src, dst, lack.count)
+			lacking = lacking[1:]
+			extraGroups[0].count = extraGroups[0].count - lack.count
 		} else {
-			extraGroups = append(extraGroups, GroupStatus{key, len(val)})
-			count2 += len(val)
+			BalanceGroup(reverseMapping, src, dst, exG.count)
+			lacking = lacking[1:]
+			extraGroups = extraGroups[1:]
 		}
 	}
+	return reverseMapping
+}
 
-	// compensation for lacking
-	diff := count2 - count1
-	if diff > 0 {
-		if len(lacking) < diff {
-			count := diff - len(lacking)
+func Compensate(count2 int, count1 int, lacking []GroupStatus, reverseMapping map[int][]int, config *Config, shardsPerReplicaGroup int) ([]GroupStatus, map[int][]int) {
+	difference := count2 - count1
+	if difference > 0 {
+		if len(lacking) < difference {
+			count := difference - len(lacking)
 			for k := range config.Groups {
-				if len(reverseMapping[k]) == average {
-					lacking = append(lacking, GroupStatus{k, 0})
+				if len(reverseMapping[k]) == shardsPerReplicaGroup {
+					lacking = append(lacking, GroupStatus{group: k, count: 0})
 					count = count - 1
 					if count == 0 {
 						break
@@ -358,50 +350,61 @@ func (sm *ShardMaster) BalancingOfShard(config *Config) {
 		}
 		for i := range lacking {
 			lacking[i].count++
-			diff = diff - 1
-			if diff == 0 {
+			difference = difference - 1
+			if difference == 0 {
 				break
 			}
 		}
 	}
-
-	// modify reverse
-	for len(lacking) != 0 && len(extraGroups) != 0 {
-		e := extraGroups[0]
-		l := lacking[0]
-		src := e.group
-		dst := l.group
-		if e.count < l.count {
-			BalanceGroup(reverseMapping, src, dst, e.count)
-			extraGroups = extraGroups[1:]
-			lacking[0].count -= e.count
-		} else if e.count > l.count {
-			BalanceGroup(reverseMapping, src, dst, l.count)
-			lacking = lacking[1:]
-			extraGroups[0].count -= l.count
-		} else {
-			BalanceGroup(reverseMapping, src, dst, e.count)
-			lacking = lacking[1:]
-			extraGroups = extraGroups[1:]
-		}
-	}
-
-	for k, v := range reverseMapping {
-		for _, s := range v {
-			config.Shards[s] = k
-		}
-	}
+	return lacking, reverseMapping
 }
 
-func BalanceGroup(data map[int][]int, source, destination, count int) {
-	srcData, dstData := data[source], data[destination]
-	if count > len(srcData) {
-		panic("Error Occured while balancing Shard")
-	}
-	e := srcData[:count]
-	dstData = append(dstData, e...)
-	srcData = srcData[count:]
+func UpdateWhenGroupRemoved(config *Config, shardsPerReplicaGroup int, reverseMapping map[int][]int,
+	lacking []GroupStatus, extraGroups []GroupStatus, replicaGroups int, count2 int, count1 int) (int, int, []GroupStatus, []GroupStatus) {
+	leftShards := len(config.Shards) - replicaGroups*shardsPerReplicaGroup // extra shards after shardsPerReplicaGroup
+	for key, val := range reverseMapping {
+		_, ok := config.Groups[key]
+		if ok {
+			if len(val) < shardsPerReplicaGroup {
+				lacking = append(lacking, GroupStatus{group: key, count: shardsPerReplicaGroup - len(val)})
+				count1 = count1 + shardsPerReplicaGroup - len(val)
+			}
+			if len(val) > shardsPerReplicaGroup {
 
-	data[source] = srcData
-	data[destination] = dstData
+				if leftShards == 0 {
+					extraGroups = append(extraGroups, GroupStatus{group: key, count: len(val) - shardsPerReplicaGroup})
+					count2 = count2 + len(val) - shardsPerReplicaGroup
+				} else if len(val) > shardsPerReplicaGroup+1 {
+					extraGroups = append(extraGroups, GroupStatus{group: key, count: len(val) - shardsPerReplicaGroup - 1})
+					count2 = count2 + len(val) - shardsPerReplicaGroup - 1
+					leftShards--
+				} else if len(val) == shardsPerReplicaGroup+1 {
+					leftShards--
+				}
+			}
+
+		} else {
+			extraGroups = append(extraGroups, GroupStatus{group: key, count: len(val)})
+			count2 = count2 + len(val)
+		}
+	}
+
+	return count2, count1, lacking, extraGroups
+}
+
+func UpdateConfigForNewGroup(reverseMapping map[int][]int, shardsPerReplicaGroup int, config *Config) (int, int, []GroupStatus, []GroupStatus) {
+	var extraGroups []GroupStatus
+	var lacking []GroupStatus
+
+	count1, count2 := 0, 0
+	// for new group
+	for group := range config.Groups {
+		_, ok := reverseMapping[group]
+		if !ok {
+			lacking = append(lacking, GroupStatus{group: group, count: shardsPerReplicaGroup})
+			count1 = count1 + shardsPerReplicaGroup
+		}
+	}
+
+	return count1, count2, lacking, extraGroups
 }

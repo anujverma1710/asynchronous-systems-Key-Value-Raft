@@ -39,14 +39,13 @@ func (ck *Clerk) Query(num int) Config {
 	args.Num = num
 	args.ClientID = ck.clientID
 	args.OperIndex = ck.opIndex
-
+	ck.opIndex++
 	for {
 		// try each known server.
 		for _, srv := range ck.servers {
 			var reply QueryReply
 			ok := srv.Call("ShardMaster.Query", args, &reply)
 			if ok && reply.WrongLeader == false {
-				ck.opIndex++
 				return reply.Config
 			}
 		}
@@ -60,6 +59,7 @@ func (ck *Clerk) Join(servers map[int][]string) {
 	args.Servers = servers
 	args.ClientID = ck.clientID
 	args.OperIndex = ck.opIndex
+	ck.opIndex++
 
 	for {
 		// try each known server.
@@ -67,7 +67,6 @@ func (ck *Clerk) Join(servers map[int][]string) {
 			var reply JoinReply
 			ok := srv.Call("ShardMaster.Join", args, &reply)
 			if ok && reply.WrongLeader == false {
-				ck.opIndex++
 				return
 			}
 		}
@@ -81,6 +80,7 @@ func (ck *Clerk) Leave(gids []int) {
 	args.GIDs = gids
 	args.ClientID = ck.clientID
 	args.OperIndex = ck.opIndex
+	ck.opIndex++
 
 	for {
 		// try each known server.
@@ -88,7 +88,6 @@ func (ck *Clerk) Leave(gids []int) {
 			var reply LeaveReply
 			ok := srv.Call("ShardMaster.Leave", args, &reply)
 			if ok && reply.WrongLeader == false {
-				ck.opIndex++
 				return
 			}
 		}
@@ -103,6 +102,7 @@ func (ck *Clerk) Move(shard int, gid int) {
 	args.GID = gid
 	args.ClientID = ck.clientID
 	args.OperIndex = ck.opIndex
+	ck.opIndex++
 
 	for {
 		// try each known server.
@@ -110,7 +110,6 @@ func (ck *Clerk) Move(shard int, gid int) {
 			var reply MoveReply
 			ok := srv.Call("ShardMaster.Move", args, &reply)
 			if ok && reply.WrongLeader == false {
-				ck.opIndex++
 				return
 			}
 		}
