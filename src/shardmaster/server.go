@@ -12,7 +12,7 @@ type ShardMaster struct {
 	applyCh chan raft.ApplyMsg
 
 	// Your data here.
-	configs         []Config // indexed by config num
+	configs         []Config
 	notifyChannels  map[int]chan struct{}
 	checkDuplicates map[int64]*RecentReply
 }
@@ -51,7 +51,7 @@ func (sm *ShardMaster) Join(args *JoinArgs, reply *JoinReply) {
 		reply.WrongLeader = true
 	} else {
 		reply.WrongLeader = false
-		reply.Err = OK
+		reply.Err = "OK"
 	}
 }
 
@@ -68,7 +68,7 @@ func (sm *ShardMaster) Leave(args *LeaveArgs, reply *LeaveReply) {
 		reply.WrongLeader = true
 	} else {
 		reply.WrongLeader = false
-		reply.Err = OK
+		reply.Err = "OK"
 	}
 }
 
@@ -84,7 +84,7 @@ func (sm *ShardMaster) Move(args *MoveArgs, reply *MoveReply) {
 		reply.WrongLeader = true
 	} else {
 		reply.WrongLeader = false
-		reply.Err = OK
+		reply.Err = "OK"
 	}
 }
 
@@ -101,7 +101,7 @@ func (sm *ShardMaster) Query(args *QueryArgs, reply *QueryReply) {
 		reply.WrongLeader = true
 	} else {
 		reply.WrongLeader = false
-		reply.Err = OK
+		reply.Err = "OK"
 		sm.mu.Lock()
 		sm.ConfigCopying(args.Num, &reply.Config)
 		sm.mu.Unlock()
@@ -134,7 +134,7 @@ func (sm *ShardMaster) checkOperationRequest(cmd *Op) bool {
 	sm.mu.Lock()
 	dup, ok := sm.checkDuplicates[cmd.ClientID]
 	if ok {
-		if cmd.OpIdx <= dup.Seq {
+		if dup.Seq >= cmd.OpIdx {
 			sm.mu.Unlock()
 			return true
 		}
@@ -149,7 +149,7 @@ func (sm *ShardMaster) checkOperationRequest(cmd *Op) bool {
 	select {
 	case <-ch:
 		curTerm, isLeader := sm.rf.GetState()
-		if !isLeader || term != curTerm {
+		if term != curTerm || !isLeader {
 			return false
 		}
 	}
@@ -185,62 +185,66 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister)
 		for {
 			select {
 			case msg, ok := <-sm.applyCh:
-				if ok && msg.Command != nil {
-					cmd := msg.Command.(*Op)
-					sm.mu.Lock()
-					dup, ok := sm.checkDuplicates[cmd.ClientID]
-					if !ok || dup.Seq < cmd.OpIdx {
-						sm.checkDuplicates[cmd.ClientID] = &RecentReply{cmd.OpIdx}
-						if cmd.Op == "Leave" {
+				if ok {
+					if msg.Command != nil {
+						cmd := msg.Command.(*Op)
+						sm.mu.Lock()
+						dup, ok := sm.checkDuplicates[cmd.ClientID]
+						if !ok || dup.Seq < cmd.OpIdx {
+							sm.checkDuplicates[cmd.ClientID] = &RecentReply{Seq: cmd.OpIdx}
+							if cmd.Op == "Leave" {
 
-							config := Config{}
-							sm.ConfigCopying(-1, &config)
-							config.Num++
+								config := Config{}
+								sm.ConfigCopying(-1, &config)
+								config.Num = config.Num + 1
 
-							for _, k := range cmd.GIDs {
-								delete(config.Groups, k)
+								for _, k := range cmd.GIDs {
+									delete(config.Groups, k)
+								}
+
+								sm.BalancingOfShard(&config)
+								sm.configs = append(sm.configs, config)
+
+							} else if cmd.Op == "Move" {
+
+								config := Config{}
+								sm.ConfigCopying(-1, &config)
+								config.Num = config.Num + 1
+								config.Shards[cmd.Shard] = cmd.GID
+
+								sm.configs = append(sm.configs, config)
+
+							} else if cmd.Op == "Join" {
+
+								config := Config{}
+								sm.ConfigCopying(-1, &config)
+								config.Num = config.Num + 1
+
+								for k, v := range cmd.Servers {
+									var servers = make([]string, len(v))
+									copy(servers, v)
+									config.Groups[k] = servers
+								}
+
+								sm.BalancingOfShard(&config)
+								sm.configs = append(sm.configs, config)
+
+							} else if cmd.Op == "Query" {
+								// no configuration change
+							} else {
+								panic("Operation is not valid")
 							}
-
-							sm.BalancingOfShard(&config)
-							sm.configs = append(sm.configs, config)
-
-						} else if cmd.Op == "Move" {
-
-							config := Config{}
-							sm.ConfigCopying(-1, &config)
-							config.Num++
-							config.Shards[cmd.Shard] = cmd.GID
-
-							sm.configs = append(sm.configs, config)
-
-						} else if cmd.Op == "Join" {
-
-							config := Config{}
-							sm.ConfigCopying(-1, &config)
-							config.Num++
-
-							for k, v := range cmd.Servers {
-								var servers = make([]string, len(v))
-								copy(servers, v)
-								config.Groups[k] = servers
-							}
-
-							sm.BalancingOfShard(&config)
-							sm.configs = append(sm.configs, config)
-
-						} else if cmd.Op == "Query" {
-							// no configuration change
-						} else {
-							panic("Operation is not valid")
 						}
-					}
 
-					notifyCh, ok := sm.notifyChannels[msg.CommandIndex]
-					if ok && notifyCh != nil {
-						close(notifyCh)
-						delete(sm.notifyChannels, msg.CommandIndex)
+						notifyCh, ok := sm.notifyChannels[msg.CommandIndex]
+						if ok {
+							if notifyCh != nil {
+								close(notifyCh)
+								delete(sm.notifyChannels, msg.CommandIndex)
+							}
+						}
+						sm.mu.Unlock()
 					}
-					sm.mu.Unlock()
 				}
 			}
 		}
@@ -250,7 +254,7 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister)
 }
 
 func (sm *ShardMaster) ConfigCopying(idx int, config *Config) {
-	if idx == -1 || idx >= len(sm.configs) {
+	if idx >= len(sm.configs) || idx == -1 {
 		idx = len(sm.configs) - 1
 	}
 
@@ -302,8 +306,8 @@ func (sm *ShardMaster) BalancingOfShard(config *Config) {
 func BalanceGroup(data map[int][]int, source, destination, count int) {
 	srcData, dstData := data[source], data[destination]
 
-	e := srcData[:count]
-	dstData = append(dstData, e...)
+	sAppend := srcData[:count]
+	dstData = append(dstData, sAppend...)
 	srcData = srcData[count:]
 
 	data[source] = srcData
@@ -316,17 +320,25 @@ func RebalanceReverse(lacking []GroupStatus, extraGroups []GroupStatus, reverseM
 		lack := lacking[0]
 		src := exG.group
 		dst := lack.group
-		if exG.count < lack.count {
-			BalanceGroup(reverseMapping, src, dst, exG.count)
+		if lack.count > exG.count {
 			extraGroups = extraGroups[1:]
-			lacking[0].count = lacking[0].count - exG.count
-		} else if exG.count > lack.count {
-			BalanceGroup(reverseMapping, src, dst, lack.count)
-			lacking = lacking[1:]
-			extraGroups[0].count = extraGroups[0].count - lack.count
-		} else {
+
 			BalanceGroup(reverseMapping, src, dst, exG.count)
+
+			lacking[0].count = lacking[0].count - exG.count
+
+		} else if lack.count < exG.count {
 			lacking = lacking[1:]
+
+			BalanceGroup(reverseMapping, src, dst, lack.count)
+
+			extraGroups[0].count = extraGroups[0].count - lack.count
+
+		} else {
+			lacking = lacking[1:]
+
+			BalanceGroup(reverseMapping, src, dst, exG.count)
+
 			extraGroups = extraGroups[1:]
 		}
 	}
@@ -336,10 +348,10 @@ func RebalanceReverse(lacking []GroupStatus, extraGroups []GroupStatus, reverseM
 func Compensate(count2 int, count1 int, lacking []GroupStatus, reverseMapping map[int][]int, config *Config, shardsPerReplicaGroup int) ([]GroupStatus, map[int][]int) {
 	difference := count2 - count1
 	if difference > 0 {
-		if len(lacking) < difference {
+		if difference > len(lacking) {
 			count := difference - len(lacking)
 			for k := range config.Groups {
-				if len(reverseMapping[k]) == shardsPerReplicaGroup {
+				if shardsPerReplicaGroup == len(reverseMapping[k]) {
 					lacking = append(lacking, GroupStatus{group: k, count: 0})
 					count = count - 1
 					if count == 0 {
@@ -349,7 +361,7 @@ func Compensate(count2 int, count1 int, lacking []GroupStatus, reverseMapping ma
 			}
 		}
 		for i := range lacking {
-			lacking[i].count++
+			lacking[i].count = lacking[i].count + 1
 			difference = difference - 1
 			if difference == 0 {
 				break
@@ -365,21 +377,21 @@ func UpdateWhenGroupRemoved(config *Config, shardsPerReplicaGroup int, reverseMa
 	for key, val := range reverseMapping {
 		_, ok := config.Groups[key]
 		if ok {
-			if len(val) < shardsPerReplicaGroup {
+			if shardsPerReplicaGroup > len(val) {
 				lacking = append(lacking, GroupStatus{group: key, count: shardsPerReplicaGroup - len(val)})
 				count1 = count1 + shardsPerReplicaGroup - len(val)
 			}
-			if len(val) > shardsPerReplicaGroup {
+			if shardsPerReplicaGroup < len(val) {
 
 				if leftShards == 0 {
 					extraGroups = append(extraGroups, GroupStatus{group: key, count: len(val) - shardsPerReplicaGroup})
 					count2 = count2 + len(val) - shardsPerReplicaGroup
-				} else if len(val) > shardsPerReplicaGroup+1 {
+				} else if shardsPerReplicaGroup+1 < len(val) {
 					extraGroups = append(extraGroups, GroupStatus{group: key, count: len(val) - shardsPerReplicaGroup - 1})
 					count2 = count2 + len(val) - shardsPerReplicaGroup - 1
-					leftShards--
-				} else if len(val) == shardsPerReplicaGroup+1 {
-					leftShards--
+					leftShards = leftShards - 1
+				} else if shardsPerReplicaGroup+1 == len(val) {
+					leftShards = leftShards - 1
 				}
 			}
 
@@ -397,7 +409,7 @@ func UpdateConfigForNewGroup(reverseMapping map[int][]int, shardsPerReplicaGroup
 	var lacking []GroupStatus
 
 	count1, count2 := 0, 0
-	// for new group
+
 	for group := range config.Groups {
 		_, ok := reverseMapping[group]
 		if !ok {
